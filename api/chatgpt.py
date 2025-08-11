@@ -40,3 +40,24 @@ class ChatGPT:
     def has_portfolio_info(self):
         """檢查是否已設定投資組合資訊"""
         return bool(self.prompt.portfolio_info.strip())
+
+
+    def analyze_single_image(self, image_data):
+        """分析單張圖片並立即返回結果"""
+        temp_prompt = Prompt()
+        
+        # 設定一個通用的投資組合資訊（因為沒有用戶狀態）
+        default_portfolio = "一般投資者，希望獲得以是否要進場做多/做空與是否要出場做多/做空分析"
+        
+        # 使用 Prompt 類別的 add_image_msg 方法
+        temp_prompt.add_image_msg([image_data], default_portfolio)
+        
+        # 直接調用 OpenAI API
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=temp_prompt.generate_prompt(),
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+        
+        return response.choices[0].message.content
