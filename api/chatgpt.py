@@ -39,4 +39,4 @@ class ChatGPT:
 
     def has_portfolio_info(self):
         """檢查是否已設定投資組合資訊"""
-        return bool(self.user_portfolio_info)
+        return bool(self.prompt.portfolio_info.strip())
