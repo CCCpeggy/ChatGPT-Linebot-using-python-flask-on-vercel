@@ -5,7 +5,7 @@ MSG_LIST_LIMIT = int(os.getenv("MSG_LIST_LIMIT", default=10))
 
 # 股票分析師的專業指導原則
 STOCK_ANALYST_GUIDELINES = """
-你是一位專業的股票分析師，專門提供台股、美股、港股、原物料等市場的技術分析和投資建議。
+你是一位專業的股票分析師，專門提供台股、美股、港股等市場的技術分析和投資建議。
 
 【專業背景】
 - 擁有豐富的技術分析和基本面分析經驗
@@ -18,6 +18,12 @@ STOCK_ANALYST_GUIDELINES = """
 - 提供風險評估和操作建議
 - 強調投資風險，不提供明確買賣點位
 
+【多圖分析要求】
+當收到多張圖片時，請：
+1. 先分別分析每張圖片的重點
+2. 再進行綜合比較和判斷
+3. 提供整體性的投資建議
+
 【回覆格式要求】
 請嚴格按照以下格式回覆：
 
@@ -26,6 +32,7 @@ STOCK_ANALYST_GUIDELINES = """
 - 圖表型態判讀（如：頭肩頂、雙底、三角整理等）
 - 支撐阻力位分析
 - 成交量分析
+- （如有多張圖）不同時間週期或角度的比較分析
 
 💰 **投資建議**
 - 針對用戶持股狀況的具體建議
@@ -43,6 +50,8 @@ STOCK_ANALYST_GUIDELINES = """
 - 中期（1-3個月）趨勢分析
 - 關鍵技術位和時間點
 - 需要關注的重要事件
+
+**免責聲明：以上分析僅供參考，投資有風險，請謹慎評估自身風險承受能力後做出投資決策。**
 """
 
 class Prompt:
@@ -64,7 +73,9 @@ class Prompt:
         # 如果已有投資組合資訊，更新它
         portfolio_msg_exists = False
         for i, msg in enumerate(self.msg_list):
-            if msg["role"] == "user" and "投資狀況：" in msg["content"]:
+            if (msg["role"] == "user" and 
+                isinstance(msg["content"], str) and 
+                "投資狀況：" in msg["content"]):
                 self.msg_list[i]["content"] = f"我的投資狀況：{portfolio_info}"
                 portfolio_msg_exists = True
                 break
@@ -83,29 +94,37 @@ class Prompt:
         
         self.msg_list.append({"role": "user", "content": new_msg})
     
-    def add_image_msg(self, image_data, portfolio_info):
+    def add_image_msg(self, image_data_list, portfolio_info):
         """添加包含圖片的訊息進行股票分析"""
         if len(self.msg_list) >= MSG_LIST_LIMIT:
             self._trim_messages()
         
-        # 將圖片轉換為 base64
-        if isinstance(image_data, bytes):
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
+        # 根據圖片數量決定提示文字
+        if len(image_data_list) == 1:
+            analysis_text = f"請根據我的投資狀況分析以下股票圖表：\n投資狀況：{portfolio_info}\n\n請提供詳細的技術分析和投資建議。"
         else:
-            image_base64 = image_data
+            analysis_text = f"請根據我的投資狀況綜合分析以下{len(image_data_list)}張股票圖表：\n投資狀況：{portfolio_info}\n\n請分別分析每張圖表，然後提供綜合性的投資建議。"
         
         message_content = [
             {
                 "type": "text",
-                "text": f"請根據我的投資狀況分析以下股票圖表：\n投資狀況：{portfolio_info}\n\n請提供詳細的技術分析和投資建議。"
-            },
-            {
+                "text": analysis_text
+            }
+        ]
+        
+        # 添加所有圖片
+        for i, image_data in enumerate(image_data_list):
+            if isinstance(image_data, bytes):
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+            else:
+                image_base64 = image_data
+            
+            message_content.append({
                 "type": "image_url",
                 "image_url": {
                     "url": f"data:image/jpeg;base64,{image_base64}"
                 }
-            }
-        ]
+            })
         
         self.msg_list.append({
             "role": "user", 

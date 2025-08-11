@@ -11,7 +11,7 @@ class ChatGPT:
         self.prompt = Prompt()
         self.model = os.getenv("OPENAI_MODEL", default="gpt-4-vision-preview")
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", default=0.3))
-        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", default=1000))
+        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", default=1500))
         self.user_portfolio_info = ""
 
     def get_response(self):
@@ -32,9 +32,13 @@ class ChatGPT:
         """添加文字訊息"""
         self.prompt.add_msg(text)
 
-    def add_image_for_analysis(self, image_data):
-        """添加圖片進行股票分析"""
-        self.prompt.add_image_msg(image_data, self.user_portfolio_info)
+    def add_single_image_for_analysis(self, image_data):
+        """添加單張圖片進行股票分析"""
+        self.prompt.add_image_msg([image_data], self.user_portfolio_info)
+
+    def add_multiple_images_for_analysis(self, image_data_list):
+        """添加多張圖片進行股票分析"""
+        self.prompt.add_image_msg(image_data_list, self.user_portfolio_info)
 
     def has_portfolio_info(self):
         """檢查是否已設定投資組合資訊"""
