@@ -23,7 +23,7 @@ chatgpt = ChatGPT()
 
 # 用於暫存多張圖片的字典
 pending_images = {}
-BATCH_WAIT_TIME = 3  # 等待3秒收集所有圖片
+BATCH_WAIT_TIME = 5  # 等待3秒收集所有圖片
 
 # 歡迎訊息
 WELCOME_MESSAGE = """📈 **股票分析機器人**
@@ -50,38 +50,70 @@ WELCOME_MESSAGE = """📈 **股票分析機器人**
 
 def process_batch_images(user_id):
     """處理批次圖片分析"""
+    logger.info(f"🔄 Timer triggered for user {user_id}")
+    
     try:
-        if user_id not in pending_images or not pending_images[user_id]['images']:
+        if user_id not in pending_images:
+            logger.error(f"❌ No pending_images entry for user {user_id}")
+            return
+            
+        if not pending_images[user_id]['images']:
+            logger.error(f"❌ No images in pending_images for user {user_id}")
             return
         
         user_data = pending_images[user_id]
         images = user_data['images']
         reply_token = user_data['reply_token']
         
-        logger.info(f"Processing {len(images)} images for user {user_id}")
+        logger.info(f"📊 Processing {len(images)} images for user {user_id}")
+        logger.info(f"🎯 Reply token: {reply_token[:20]}...")
+        
+        # 檢查是否有投資組合資訊
+        if not chatgpt.has_portfolio_info():
+            logger.error("❌ No portfolio info available")
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="⚠️ 請先設定投資組合資訊")
+            )
+            del pending_images[user_id]
+            return
         
         # 分析所有圖片
+        logger.info("🤖 Starting ChatGPT analysis...")
         analysis_result = chatgpt.analyze_images(images)
+        logger.info(f"✅ Analysis completed, result length: {len(analysis_result)}")
         
         reply_text = f"📊 **股票圖表分析結果**\n\n{analysis_result}"
         
         # 回覆分析結果
+        logger.info("📤 Sending reply message...")
         line_bot_api.reply_message(
             reply_token,
             TextSendMessage(text=reply_text)
         )
+        logger.info("✅ Reply message sent successfully")
         
         # 清除暫存資料
         del pending_images[user_id]
+        logger.info(f"🗑️ Cleaned up pending images for user {user_id}")
         
     except Exception as e:
-        logger.error(f"Error in process_batch_images: {str(e)}")
+        logger.error(f"💥 Error in process_batch_images: {str(e)}")
+        logger.error(f"💥 Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"💥 Traceback: {traceback.format_exc()}")
+        
         if user_id in pending_images:
-            reply_token = pending_images[user_id]['reply_token']
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text="❌ 圖片分析失敗，請稍後再試。")
-            )
+            try:
+                reply_token = pending_images[user_id]['reply_token']
+                line_bot_api.reply_message(
+                    reply_token,
+                    TextSendMessage(text="❌ 圖片分析失敗，請稍後再試。")
+                )
+                logger.info("📤 Error message sent to user")
+            except Exception as reply_error:
+                logger.error(f"💥 Failed to send error message: {str(reply_error)}")
+            
             del pending_images[user_id]
 
 @app.route('/')
