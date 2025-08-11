@@ -5,8 +5,6 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMess
 from api.chatgpt import ChatGPT
 import os
 import logging
-import time
-from threading import Timer
 import traceback
 
 # 設定日誌
@@ -22,9 +20,8 @@ line_handler = WebhookHandler(channel_secret)
 app = Flask(__name__)
 chatgpt = ChatGPT()
 
-# 用於暫存多張圖片的字典
-pending_images = {}
-BATCH_WAIT_TIME = 3  # 等待3秒收集所有圖片
+# 用於暫存用戶圖片的字典
+user_images = {}
 
 # 歡迎訊息
 WELCOME_MESSAGE = """📈 **股票分析機器人**
@@ -36,82 +33,18 @@ WELCOME_MESSAGE = """📈 **股票分析機器人**
    例：問股市 持有台積電200股，成本600元
 
 2️⃣ 傳送股票圖表截圖
-   • 支援單張或多張圖片同時傳送
-   • 立即進行分析並回復結果
+   • 可以傳送多張圖片
+   • 系統會暫存您的圖片
 
-💡 **多圖分析建議：**
-   • 不同時間週期（日線、週線、月線）
-   • 不同技術指標圖表
-   • 個股與大盤對比圖
+3️⃣ 輸入「分析」或「幫我分析」
+   • 系統會分析所有已傳送的圖片
+   • 提供綜合分析結果
 
 🔸 **其他指令：**
 • 更新持股 [新資訊] - 更新投資組合
+• 清除圖片 - 清除暫存的圖片
 • help - 顯示說明
 """
-
-def process_batch_images(user_id):
-    """處理批次圖片分析"""
-    logger.info(f"🔄 Timer triggered for user {user_id}")
-    
-    try:
-        if user_id not in pending_images:
-            logger.error(f"❌ No pending_images entry for user {user_id}")
-            return
-            
-        if not pending_images[user_id]['images']:
-            logger.error(f"❌ No images in pending_images for user {user_id}")
-            return
-        
-        user_data = pending_images[user_id]
-        images = user_data['images']
-        
-        logger.info(f"📊 Processing {len(images)} images for user {user_id}")
-        
-        # 檢查是否有投資組合資訊
-        if not chatgpt.has_portfolio_info():
-            logger.error("❌ No portfolio info available")
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text="⚠️ 請先設定投資組合資訊")
-            )
-            del pending_images[user_id]
-            return
-        
-        # 分析所有圖片
-        logger.info("🤖 Starting ChatGPT analysis...")
-        analysis_result = chatgpt.analyze_images(images)
-        logger.info(f"✅ Analysis completed, result length: {len(analysis_result)}")
-        
-        reply_text = f"📊 **股票圖表分析結果**\n\n{analysis_result}"
-        
-        # 使用 push message 回覆分析結果
-        logger.info("📤 Sending push message...")
-        line_bot_api.push_message(
-            user_id,
-            TextSendMessage(text=reply_text)
-        )
-        logger.info("✅ Push message sent successfully")
-        
-        # 清除暫存資料
-        del pending_images[user_id]
-        logger.info(f"🗑️ Cleaned up pending images for user {user_id}")
-        
-    except Exception as e:
-        logger.error(f"💥 Error in process_batch_images: {str(e)}")
-        logger.error(f"💥 Error type: {type(e).__name__}")
-        logger.error(f"💥 Traceback: {traceback.format_exc()}")
-        
-        if user_id in pending_images:
-            try:
-                line_bot_api.push_message(
-                    user_id,
-                    TextSendMessage(text="❌ 圖片分析失敗，請稍後再試。")
-                )
-                logger.info("📤 Error message sent to user")
-            except Exception as reply_error:
-                logger.error(f"💥 Failed to send error message: {str(reply_error)}")
-            
-            del pending_images[user_id]
 
 @app.route('/')
 def home():
@@ -141,13 +74,6 @@ def handle_text_message(event):
         user_id = event.source.user_id
         logger.info(f"💬 Received text message: {user_message}")
 
-        # 如果有待處理的圖片，先清除
-        if user_id in pending_images:
-            logger.info(f"🗑️ Clearing pending images for user {user_id}")
-            if pending_images[user_id]['timer']:
-                pending_images[user_id]['timer'].cancel()
-            del pending_images[user_id]
-
         # 幫助指令
         if user_message.lower() in ["help", "幫助", "說明", "?"]:
             reply_text = WELCOME_MESSAGE
@@ -172,12 +98,13 @@ def handle_text_message(event):
 📋 您的投資狀況：
 {portfolio_info}
 
-📸 **下一步：** 請傳送股票圖表截圖進行分析
+📸 **下一步：** 
+1. 傳送股票圖表截圖（可傳送多張）
+2. 輸入「分析」開始分析
 
-💡 **多圖分析提示：**
-• 可同時傳送多張圖片（系統會等待3秒收集）
-• 建議上傳不同時間週期的圖表
-• 系統會綜合分析並回復結果
+💡 **使用提示：**
+• 可以先傳送多張圖片再一起分析
+• 支援各種股票圖表和技術指標
 """
                 
         # 更新投資組合
@@ -188,6 +115,73 @@ def handle_text_message(event):
             else:
                 chatgpt.set_portfolio_info(portfolio_info)
                 reply_text = f"✅ **投資組合已更新**\n\n📋 新的投資狀況：\n{portfolio_info}"
+        
+        # 分析指令
+        elif user_message in ["分析", "幫我分析", "開始分析", "analyze"]:
+            if not chatgpt.has_portfolio_info():
+                reply_text = """⚠️ **請先設定投資組合**
+
+請輸入「問股市 [你的持股狀況]」來設定投資組合資訊
+
+📝 **範例：**
+問股市 持有台積電200股，成本價600元
+"""
+            elif user_id not in user_images or not user_images[user_id]:
+                reply_text = """📸 **請先傳送圖片**
+
+請先傳送股票圖表截圖，然後再輸入「分析」
+
+💡 **提示：**
+• 可以傳送多張圖片
+• 支援各種股票圖表格式
+• 建議上傳清晰的圖表
+"""
+            else:
+                try:
+                    images = user_images[user_id]
+                    logger.info(f"🤖 Starting analysis for {len(images)} images")
+                    
+                    # 分析所有圖片
+                    analysis_result = chatgpt.analyze_images(images)
+                    logger.info(f"✅ Analysis completed, result length: {len(analysis_result)}")
+                    
+                    reply_text = f"""📊 **股票圖表分析結果**
+（已分析 {len(images)} 張圖片）
+
+{analysis_result}
+
+---
+💡 **提示：** 圖片已分析完成，如需重新分析請重新傳送圖片
+"""
+                    
+                    # 清除已分析的圖片
+                    del user_images[user_id]
+                    logger.info(f"🗑️ Cleared images for user {user_id}")
+                    
+                except Exception as e:
+                    logger.error(f"💥 Analysis error: {str(e)}")
+                    logger.error(f"💥 Traceback: {traceback.format_exc()}")
+                    reply_text = """❌ **圖片分析失敗**
+
+可能原因：
+• ChatGPT API 暫時無法使用
+• 圖片格式問題
+• 網路連線問題
+
+💡 **建議：**
+• 重新傳送圖片
+• 稍後再試
+• 確保圖片清晰可見
+"""
+        
+        # 清除圖片指令
+        elif user_message in ["清除圖片", "清除", "clear", "重置"]:
+            if user_id in user_images:
+                image_count = len(user_images[user_id])
+                del user_images[user_id]
+                reply_text = f"🗑️ **已清除 {image_count} 張暫存圖片**\n\n請重新傳送要分析的圖片"
+            else:
+                reply_text = "📭 **目前沒有暫存的圖片**\n\n請傳送圖片後再進行分析"
                 
         # 一般股市問題
         else:
@@ -249,37 +243,42 @@ def handle_image_message(event):
             logger.info(f"✅ Image downloaded, size: {len(image_data)} bytes")
             
             # 初始化用戶的圖片暫存
-            if user_id not in pending_images:
-                logger.info(f"🆕 Creating new pending_images entry for user {user_id}")
-                pending_images[user_id] = {
-                    'images': [],
-                    'user_id': user_id,
-                    'timer': None
-                }
-            else:
-                logger.info(f"📝 User {user_id} already has pending images: {len(pending_images[user_id]['images'])}")
+            if user_id not in user_images:
+                user_images[user_id] = []
+                logger.info(f"🆕 Created new image storage for user {user_id}")
             
             # 添加圖片到暫存
-            pending_images[user_id]['images'].append(image_data)
-            logger.info(f"➕ Added image to batch. Total images for user {user_id}: {len(pending_images[user_id]['images'])}")
+            user_images[user_id].append(image_data)
+            image_count = len(user_images[user_id])
+            logger.info(f"➕ Added image to storage. Total images for user {user_id}: {image_count}")
             
-            # 取消之前的計時器
-            if pending_images[user_id]['timer']:
-                logger.info("⏰ Cancelling previous timer")
-                pending_images[user_id]['timer'].cancel()
+            # 回覆確認訊息
+            reply_text = f"""📸 **圖片已收到** ({image_count}/10)
+
+✅ 已暫存您的圖片
+
+📝 **下一步：**
+• 繼續傳送更多圖片，或
+• 輸入「分析」開始分析
+
+💡 **其他指令：**
+• 清除圖片 - 清除暫存的圖片
+• help - 查看使用說明
+"""
             
-            # 設定新的計時器
-            logger.info(f"⏰ Setting new timer for {BATCH_WAIT_TIME} seconds")
-            timer = Timer(BATCH_WAIT_TIME, process_batch_images, [user_id])
-            pending_images[user_id]['timer'] = timer
-            timer.start()
-            logger.info("✅ Timer started successfully")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply_text)
+            )
+            logger.info("✅ Confirmation message sent")
             
         except LineBotApiError as e:
             logger.error(f"💥 LINE Bot API error: {str(e)}")
             logger.error(f"💥 Error status code: {e.status_code}")
-            logger.error(f"💥 Error details: {e.error.details}")
-            reply_text = """❌ **圖片下載失敗**
+            if hasattr(e, 'error') and hasattr(e.error, 'details'):
+                logger.error(f"💥 Error details: {e.error.details}")
+            
+            reply_text = """❌ **圖片處理失敗**
 
 可能原因：
 • LINE API 暫時無法存取
@@ -290,21 +289,24 @@ def handle_image_message(event):
 • 重新傳送圖片
 • 稍後再試
 """
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=reply_text)
-            )
+            try:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=reply_text)
+                )
+            except Exception as reply_error:
+                logger.error(f"💥 Failed to send error reply: {str(reply_error)}")
             
         except Exception as e:
             logger.error(f"💥 Image processing error: {str(e)}")
             logger.error(f"💥 Error type: {type(e).__name__}")
             logger.error(f"💥 Traceback: {traceback.format_exc()}")
             
-            reply_text = """❌ **圖片處理失敗**
+            reply_text = """❌ **圖片暫存失敗**
 
 可能原因：
 • 圖片格式不支援
-• 圖片太大或太小
+• 圖片太大
 • 系統暫時錯誤
 
 💡 **建議：**
@@ -312,10 +314,13 @@ def handle_image_message(event):
 • 重新截圖並傳送
 • 稍後再試
 """
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=reply_text)
-            )
+            try:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=reply_text)
+                )
+            except Exception as reply_error:
+                logger.error(f"💥 Failed to send error reply: {str(reply_error)}")
         
     except Exception as e:
         logger.error(f"💥 Error in handle_image_message: {str(e)}")
