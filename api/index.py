@@ -5,8 +5,6 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMess
 from api.chatgpt import ChatGPT
 import os
 import logging
-from collections import defaultdict
-import time
 
 # 設定日誌
 logging.basicConfig(level=logging.INFO)
@@ -21,11 +19,6 @@ line_handler = WebhookHandler(channel_secret)
 app = Flask(__name__)
 chatgpt = ChatGPT()
 
-# 用於處理多張圖片的暫存
-user_images = defaultdict(list)
-user_last_activity = defaultdict(float)
-IMAGE_TIMEOUT = 10  # 10秒內的圖片視為同一批
-
 # 歡迎訊息
 WELCOME_MESSAGE = """📈 **股票分析機器人**
 
@@ -35,9 +28,11 @@ WELCOME_MESSAGE = """📈 **股票分析機器人**
 1️⃣ 輸入「問股市 [你的持股狀況]」
    例：問股市 持有台積電200股，成本600元
 
-2️⃣ 傳送股票圖表截圖（可一次傳送多張）
+2️⃣ 傳送股票圖表截圖
+   • 支援單張或多張圖片同時傳送
+   • 立即進行分析並回復結果
 
-💡 **多圖分析：** 可同時傳送多張圖片進行綜合分析
+💡 **多圖分析建議：**
    • 不同時間週期（日線、週線、月線）
    • 不同技術指標圖表
    • 個股與大盤對比圖
@@ -46,20 +41,6 @@ WELCOME_MESSAGE = """📈 **股票分析機器人**
 • 更新持股 [新資訊] - 更新投資組合
 • help - 顯示說明
 """
-
-def clear_old_images():
-    """清理超時的圖片暫存"""
-    current_time = time.time()
-    expired_users = []
-    
-    for user_id, last_time in user_last_activity.items():
-        if current_time - last_time > IMAGE_TIMEOUT:
-            expired_users.append(user_id)
-    
-    for user_id in expired_users:
-        if user_id in user_images:
-            del user_images[user_id]
-        del user_last_activity[user_id]
 
 @app.route('/')
 def home():
@@ -86,16 +67,7 @@ def callback():
 def handle_text_message(event):
     try:
         user_message = event.message.text.strip()
-        user_id = event.source.user_id
         logger.info(f"Received text message: {user_message}")
-
-        # 清理過期的圖片暫存
-        clear_old_images()
-        
-        # 如果用戶有待處理的圖片，先清空
-        if user_id in user_images:
-            del user_images[user_id]
-            del user_last_activity[user_id]
 
         # 幫助指令
         if user_message.lower() in ["help", "幫助", "說明", "?"]:
@@ -123,10 +95,10 @@ def handle_text_message(event):
 
 📸 **下一步：** 請傳送股票圖表截圖進行分析
 
-💡 **多圖分析提示：**
-• 可同時傳送多張圖片（建議2-4張）
-• 系統會在10秒內自動整合同批圖片
-• 支援不同時間週期或角度的綜合分析
+💡 **使用提示：**
+• 可同時傳送多張圖片進行綜合分析
+• 系統會立即分析並回復結果
+• 建議上傳清晰的圖表截圖
 """
                 
         # 更新投資組合
@@ -167,11 +139,7 @@ def handle_text_message(event):
 @line_handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     try:
-        user_id = event.source.user_id
-        logger.info(f"Received image message from user: {user_id}")
-        
-        # 清理過期的圖片暫存
-        clear_old_images()
+        logger.info("Received image message")
         
         if not chatgpt.has_portfolio_info():
             reply_text = """⚠️ **請先設定投資組合**
@@ -192,73 +160,27 @@ def handle_image_message(event):
             message_content = line_bot_api.get_message_content(event.message.id)
             image_data = message_content.content
             
-            # 將圖片加入用戶的暫存列表
-            user_images[user_id].append(image_data)
-            user_last_activity[user_id] = time.time()
+            # 立即分析圖片
+            logger.info("Starting image analysis...")
+            analysis_result = chatgpt.analyze_images([image_data])
             
-            current_image_count = len(user_images[user_id])
-            
-            # 如果是第一張圖片，等待可能的後續圖片
-            if current_image_count == 1:
-                reply_text = f"""📸 **圖片已接收** (1張)
-
-⏳ **等待中...** 
-如果您要傳送更多圖片進行綜合分析，請在10秒內繼續傳送。
-
-💡 **建議組合：**
-• 日線 + 週線圖表
-• K線 + 技術指標圖
-• 個股 + 大盤對比圖
-
-🔄 系統將在10秒後自動開始分析
-"""
-                
-                # 設定延遲分析
-                import threading
-                def delayed_analysis():
-                    time.sleep(IMAGE_TIMEOUT)
-                    if user_id in user_images and len(user_images[user_id]) > 0:
-                        try:
-                            images = user_images[user_id].copy()
-                            del user_images[user_id]
-                            del user_last_activity[user_id]
-                            
-                            # 進行分析
-                            if len(images) == 1:
-                                chatgpt.add_single_image_for_analysis(images[0])
-                            else:
-                                chatgpt.add_multiple_images_for_analysis(images)
-                            
-                            analysis_result = chatgpt.get_response()
-                            
-                            # 推送分析結果
-                            line_bot_api.push_message(
-                                user_id,
-                                TextSendMessage(text=f"📊 **分析完成** ({len(images)}張圖片)\n\n{analysis_result}")
-                            )
-                            
-                        except Exception as e:
-                            logger.error(f"Delayed analysis error: {str(e)}")
-                            line_bot_api.push_message(
-                                user_id,
-                                TextSendMessage(text="❌ 分析過程中發生錯誤，請重新傳送圖片。")
-                            )
-                
-                threading.Thread(target=delayed_analysis, daemon=True).start()
-                
-            else:
-                # 多張圖片，更新狀態
-                reply_text = f"""📸 **圖片已接收** ({current_image_count}張)
-
-⏳ **繼續等待...** 
-可繼續傳送更多圖片，或等待系統自動分析。
-
-🔄 系統將在最後一張圖片後10秒開始分析
-"""
+            reply_text = f"📊 **股票圖表分析結果**\n\n{analysis_result}"
             
         except Exception as e:
-            logger.error(f"Image processing error: {str(e)}")
-            reply_text = "❌ 圖片處理時發生錯誤，請確認圖片清晰度後重新傳送。"
+            logger.error(f"Image analysis error: {str(e)}")
+            reply_text = """❌ **圖片分析失敗**
+
+可能原因：
+• 圖片格式不支援
+• 圖片太大或太小
+• 網路連線問題
+• 服務暫時忙碌
+
+💡 **建議：**
+• 確保圖片清晰可見
+• 重新截圖並傳送
+• 稍後再試
+"""
         
         line_bot_api.reply_message(
             event.reply_token,
@@ -267,6 +189,10 @@ def handle_image_message(event):
         
     except Exception as e:
         logger.error(f"Error in handle_image_message: {str(e)}")
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="❌ 系統錯誤，請稍後再試。")
+        )
 
 if __name__ == "__main__":
     app.run()
